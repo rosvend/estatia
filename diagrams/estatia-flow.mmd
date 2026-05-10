@@ -1,0 +1,27 @@
+flowchart TD
+  U[User Instructions] --> I[Intake / Parse Request]
+  I --> COORD["Coordinator / Synthesizer<br/>(orchestrates sub-agents)"]
+
+  %% Sub-agents orchestrated by coordinator
+  COORD --> SA["Scraping Agent<br/>(listings/properties search)"]
+  SA --> FOUND{Any viable listings found?}
+  FOUND -- No --> CCA["Chilling Instructions Agent<br/>(relax/rewrite constraints and re-try)"]
+  CCA --> COORD
+  FOUND -- Yes --> SYN["Coordinator Synthesis<br/>(candidates + rationale)"]
+
+  COORD --> NS{Neighborhood unclear?}
+  NS -- Yes --> NA["News Searcher Agent<br/>(identify areas / context)"]
+  NS -- No --> SKIPNEWS[Skip News]
+
+  COORD --> WA["WhatsApp Validator Agent<br/>(availability check)<br/>[standby initially]"]
+
+  %% Synthesis + evaluation gate
+  NA --> SYN
+  WA --> SYN
+
+  SYN --> E["Evaluator Agent<br/>(score vs threshold)"]
+  E --> PASS{Score >= threshold?}
+  PASS -- No --> COORD
+  PASS -- Yes --> SELL["Real Estate Seller Agent<br/>(generate HTML decision)"]
+
+  SELL --> OUT[Final HTML Output]

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ title }}</title>
+    <style>
+      :root {
+        --bg: #f4efe4;
+        --bg-strong: #e3d4b5;
+        --panel: rgba(255, 252, 246, 0.92);
+        --ink: #1f1b16;
+        --muted: #5f564a;
+        --accent: #87643d;
+        --line: rgba(31, 27, 22, 0.1);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(255, 255, 255, 0.5), transparent 40%),
+          linear-gradient(135deg, var(--bg), var(--bg-strong));
+      }
+
+      .shell {
+        width: min(1180px, calc(100vw - 32px));
+        margin: 32px auto;
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+        gap: 24px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        padding: 24px;
+        box-shadow: 0 24px 60px rgba(45, 33, 18, 0.08);
+        backdrop-filter: blur(10px);
+      }
+
+      h1,
+      h2,
+      h3,
+      h4,
+      p {
+        margin-top: 0;
+      }
+
+      .label {
+        display: block;
+        margin-bottom: 10px;
+        font-size: 0.85rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 260px;
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: #fffdf8;
+        color: var(--ink);
+        font: inherit;
+        resize: vertical;
+      }
+
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 999px;
+        padding: 14px 18px;
+        background: var(--ink);
+        color: #f9f4eb;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .hint,
+      .trace li,
+      .error {
+        color: var(--muted);
+      }
+
+      .trace {
+        padding-left: 18px;
+        margin-bottom: 0;
+      }
+
+      .report .hero {
+        padding-bottom: 20px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .report .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .report .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 0.92rem;
+        color: var(--muted);
+      }
+
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin: 24px 0;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        padding: 18px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .price {
+        font-size: 1.2rem;
+      }
+
+      .empty {
+        min-height: 400px;
+        display: grid;
+        place-items: center;
+        text-align: center;
+      }
+
+      @media (max-width: 900px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <p class="label">Real estate brief</p>
+        <h1>{{ title }}</h1>
+        <p class="hint">
+          Enter a property request in plain language. The workflow parses it with Pydantic-backed
+          structured output, runs the LangGraph flow, evaluates the result, and renders an HTML
+          recommendation.
+        </p>
+        <form method="post" action="/run">
+          <label class="label" for="raw_text">User input</label>
+          <textarea id="raw_text" name="raw_text">{{ raw_text }}</textarea>
+          <p class="hint">The current app uses seeded listings and neighborhood insights. Scraping and WhatsApp are scaffolded for the next iteration.</p>
+          <button type="submit">Run workflow</button>
+        </form>
+        {% if error %}
+        <div class="error">
+          <h2>Error</h2>
+          <p>{{ error }}</p>
+        </div>
+        {% endif %}
+        {% if trace %}
+        <div>
+          <h2>Trace</h2>
+          <ol class="trace">
+            {% for event in trace %}
+            <li><strong>{{ event.node }}</strong>: {{ event.message }}</li>
+            {% endfor %}
+          </ol>
+        </div>
+        {% endif %}
+      </section>
+      <section class="panel">
+        {% if result_html %}
+          {{ result_html | safe }}
+        {% else %}
+        <div class="empty">
+          <div>
+            <h2>No report yet</h2>
+            <p>The final seller HTML will appear here after the graph finishes.</p>
+          </div>
+        </div>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>
