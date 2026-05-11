@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -9,6 +10,8 @@ from estatia.config import Settings
 from estatia.listing_sources import PlaywrightListingClient
 from estatia.models import EvalResult, Listing, NewsInsight, SellerReport, UserRequest
 from estatia.sample_data import SAMPLE_LISTINGS, SAMPLE_NEWS
+
+logger = logging.getLogger("estatia.services")
 
 
 class IntakeService(Protocol):
@@ -57,6 +60,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         self.client = OpenAI(api_key=settings.openai_api_key)
 
     def parse_request(self, raw_text: str) -> UserRequest:
+        logger.info("OpenAI parse_request:start")
         response = self.client.responses.parse(
             model=self.settings.fast_model,
             input=[
@@ -72,9 +76,11 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
             ],
             text_format=UserRequest,
         )
+        logger.info("OpenAI parse_request:done")
         return response.output_parsed
 
     def chill_request(self, request: UserRequest, feedback: str) -> UserRequest:
+        logger.info("OpenAI chill_request:start")
         response = self.client.responses.parse(
             model=self.settings.fast_model,
             input=[
@@ -109,6 +115,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
             ],
             text_format=UserRequest,
         )
+        logger.info("OpenAI chill_request:done")
         return response.output_parsed
 
     def evaluate(
@@ -118,6 +125,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         news: list[NewsInsight],
         threshold: float,
     ) -> EvalResult:
+        logger.info("OpenAI evaluate:start listings=%s news=%s", len(listings), len(news))
         listing_blob = [listing.model_dump(mode="json") for listing in listings]
         news_blob = [item.model_dump(mode="json") for item in news]
         response = self.client.responses.parse(
@@ -143,6 +151,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
             text_format=EvalResult,
         )
         result = response.output_parsed
+        logger.info("OpenAI evaluate:done score=%.2f", result.score)
         return result.model_copy(update={"threshold": threshold, "passed": result.score >= threshold})
 
     def build_report(
@@ -152,6 +161,7 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
         news: list[NewsInsight],
         evaluation: EvalResult,
     ) -> SellerReport:
+        logger.info("OpenAI build_report:start listings=%s", len(listings))
         response = self.client.responses.parse(
             model=self.settings.quality_model,
             input=[
@@ -174,11 +184,13 @@ class OpenAIWorkflowService(IntakeService, EvaluationService, SellerService):
             ],
             text_format=SellerReport,
         )
+        logger.info("OpenAI build_report:done")
         return response.output_parsed
 
 
 class SeedListingService(ListingService):
     def search(self, request: UserRequest) -> list[Listing]:
+        logger.info("Seed listing search:start city=%s neighborhood=%s budget_max=%s", request.location.city, request.location.neighborhood, request.budget.max)
         matches: list[Listing] = []
         nearest_price: float | None = None
         for listing in SAMPLE_LISTINGS:
@@ -207,6 +219,7 @@ class SeedListingService(ListingService):
                 score += 0.2
             matches.append(listing.model_copy(update={"score": round(score, 3)}))
         matches.sort(key=lambda item: item.score, reverse=True)
+        logger.info("Seed listing search:done matches=%s", len(matches[:5]))
         return matches[:5]
 
 
@@ -216,11 +229,15 @@ class PlaywrightListingService(ListingService):
         self.fallback = fallback
 
     def search(self, request: UserRequest) -> list[Listing]:
+        logger.info("Playwright listing search:start")
         listings = self.client.search(request)
         if listings:
+            logger.info("Playwright listing search:done listings=%s", len(listings))
             return listings
         if self.fallback is not None:
+            logger.warning("Playwright listing search returned no listings, falling back to seed data")
             return self.fallback.search(request)
+        logger.warning("Playwright listing search returned no listings and no fallback is configured")
         return []
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 
 from estatia.config import settings
 from estatia.graph import build_graph
+from estatia.logging_utils import configure_logging
 from estatia.services import (
     OpenAIWorkflowService,
     PlaywrightListingService,
@@ -18,11 +20,14 @@ from estatia.services import (
 )
 
 
+configure_logging(settings.log_level)
+logger = logging.getLogger("estatia.app")
 templates = Jinja2Templates(directory="src/estatia/templates")
 app = FastAPI(title=settings.app_name)
 
 
 def build_services() -> Services:
+    logger.info("Building services with listing_mode=%s", settings.listing_mode)
     workflow = OpenAIWorkflowService(settings)
     seed_listing = SeedListingService()
     if settings.listing_mode == "playwright":
@@ -44,6 +49,7 @@ def build_services() -> Services:
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request) -> HTMLResponse:
+    logger.info("Rendering home page")
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -70,7 +76,9 @@ async def run_workflow(request: Request) -> HTMLResponse:
     body = await request.body()
     form = parse_qs(body.decode("utf-8"))
     raw_text = form.get("raw_text", [""])[0].strip()
+    logger.info("Received workflow request")
     if not raw_text:
+        logger.warning("Workflow request arrived without raw_text")
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -85,7 +93,13 @@ async def run_workflow(request: Request) -> HTMLResponse:
     try:
         services = build_services()
         graph = build_graph(services, settings)
+        logger.info("Invoking LangGraph workflow")
         state = graph.invoke({"raw_text": raw_text, "retries": 0, "trace": []})
+        logger.info(
+            "Workflow finished with listings=%s evaluation_passed=%s",
+            len(state.get("listings", [])),
+            state.get("evaluation").passed if state.get("evaluation") else None,
+        )
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -98,6 +112,7 @@ async def run_workflow(request: Request) -> HTMLResponse:
             },
         )
     except Exception as exc:
+        logger.exception("Workflow execution failed")
         return templates.TemplateResponse(
             request,
             "index.html",

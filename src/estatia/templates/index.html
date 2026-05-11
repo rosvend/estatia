@@ -84,6 +84,16 @@
         color: #f9f4eb;
         font: inherit;
         cursor: pointer;
+        transition: transform 180ms ease, opacity 180ms ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: wait;
       }
 
       .hint,
@@ -142,6 +152,96 @@
         text-align: center;
       }
 
+      .loading-shell {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(18, 14, 10, 0.36);
+        backdrop-filter: blur(10px);
+        z-index: 50;
+      }
+
+      .loading-shell.is-visible {
+        display: flex;
+      }
+
+      .loading-card {
+        width: min(520px, 100%);
+        padding: 28px;
+        border-radius: 28px;
+        background: rgba(255, 252, 246, 0.96);
+        border: 1px solid rgba(31, 27, 22, 0.08);
+        box-shadow: 0 30px 80px rgba(26, 18, 10, 0.18);
+      }
+
+      .loading-top {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      .loading-ring {
+        width: 52px;
+        height: 52px;
+        border-radius: 999px;
+        border: 3px solid rgba(135, 100, 61, 0.15);
+        border-top-color: var(--accent);
+        animation: spin 900ms linear infinite;
+      }
+
+      .loading-title {
+        margin-bottom: 6px;
+      }
+
+      .loading-copy {
+        color: var(--muted);
+        margin-bottom: 0;
+      }
+
+      .loading-bar {
+        height: 8px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(31, 27, 22, 0.08);
+        margin: 20px 0 18px;
+      }
+
+      .loading-bar span {
+        display: block;
+        width: 36%;
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #b18a5d, #87643d);
+        animation: glide 1400ms ease-in-out infinite;
+      }
+
+      .loading-status {
+        color: var(--muted);
+        min-height: 24px;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes glide {
+        0% {
+          transform: translateX(-120%);
+        }
+        50% {
+          transform: translateX(170%);
+        }
+        100% {
+          transform: translateX(260%);
+        }
+      }
+
       @media (max-width: 900px) {
         .shell {
           grid-template-columns: 1fr;
@@ -150,6 +250,19 @@
     </style>
   </head>
   <body>
+    <div id="loading-shell" class="loading-shell" aria-hidden="true">
+      <div class="loading-card">
+        <div class="loading-top">
+          <div class="loading-ring"></div>
+          <div>
+            <h2 class="loading-title">Agent running</h2>
+            <p class="loading-copy">Searching listings, relaxing constraints when needed, and preparing the final report.</p>
+          </div>
+        </div>
+        <div class="loading-bar"><span></span></div>
+        <p id="loading-status" class="loading-status">Parsing the request...</p>
+      </div>
+    </div>
     <main class="shell">
       <section class="panel">
         <p class="label">Real estate brief</p>
@@ -159,11 +272,11 @@
           structured output, runs the LangGraph flow, evaluates the result, and renders an HTML
           recommendation.
         </p>
-        <form method="post" action="/run">
+        <form id="search-form" method="post" action="/run">
           <label class="label" for="raw_text">User input</label>
           <textarea id="raw_text" name="raw_text">{{ raw_text }}</textarea>
           <p class="hint">The current app uses seeded listings and neighborhood insights. Scraping and WhatsApp are scaffolded for the next iteration.</p>
-          <button type="submit">Run workflow</button>
+          <button id="submit-button" type="submit">Run workflow</button>
         </form>
         {% if error %}
         <div class="error">
@@ -195,5 +308,35 @@
         {% endif %}
       </section>
     </main>
+    <script>
+      const form = document.getElementById("search-form");
+      const shell = document.getElementById("loading-shell");
+      const status = document.getElementById("loading-status");
+      const button = document.getElementById("submit-button");
+      const steps = [
+        "Parsing the request...",
+        "Searching for listings...",
+        "Checking whether constraints need relaxing...",
+        "Evaluating candidate properties...",
+        "Composing the final report..."
+      ];
+
+      if (form && shell && status && button) {
+        form.addEventListener("submit", () => {
+          shell.classList.add("is-visible");
+          shell.setAttribute("aria-hidden", "false");
+          button.disabled = true;
+          button.textContent = "Working...";
+
+          let index = 0;
+          status.textContent = steps[index];
+
+          window.loadingInterval = window.setInterval(() => {
+            index = (index + 1) % steps.length;
+            status.textContent = steps[index];
+          }, 1800);
+        });
+      }
+    </script>
   </body>
 </html>

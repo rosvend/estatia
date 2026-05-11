@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote_plus, urlparse
 
-from bs4 import BeautifulSoup
-
 from estatia.config import Settings
 from estatia.models import Listing, ListingLocation, ListingProperty, PropertyType, UserRequest
+
+try:
+    from bs4 import BeautifulSoup
+except Exception:  # pragma: no cover - import depends on local environment
+    BeautifulSoup = None
 
 try:
     from playwright.sync_api import Error as PlaywrightError
@@ -19,6 +23,8 @@ except Exception:  # pragma: no cover - import depends on local environment
     PlaywrightError = Exception
     Page = Any
     sync_playwright = None
+
+logger = logging.getLogger("estatia.listing_sources")
 
 
 SEARCH_DOMAINS = (
@@ -41,7 +47,18 @@ class PlaywrightListingClient:
 
     def search(self, request: UserRequest) -> list[Listing]:
         if sync_playwright is None:
+            logger.warning("Playwright is not available in the current environment")
             return []
+        if BeautifulSoup is None:
+            logger.warning("beautifulsoup4 is not available in the current environment")
+            return []
+        logger.info(
+            "Playwright search:start city=%s neighborhood=%s budget_max=%s radius_km=%s",
+            request.location.city,
+            request.location.neighborhood,
+            request.budget.max,
+            request.location.radius_km,
+        )
         try:
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(headless=self.settings.browser_headless)
@@ -55,27 +72,36 @@ class PlaywrightListingClient:
                 page = context.new_page()
                 page.set_default_timeout(self.settings.scrape_timeout_ms)
                 results = self._search_results(page, request)
+                logger.info("Playwright search:search_results=%s", len(results))
                 listings: list[Listing] = []
                 for result in results:
+                    logger.info("Playwright search:visiting %s", result.url)
                     details_page = context.new_page()
                     details_page.set_default_timeout(self.settings.scrape_timeout_ms)
                     try:
                         details_page.goto(result.url, wait_until="domcontentloaded")
                         listing = self._extract_listing(details_page, result, request)
                         if listing:
+                            logger.info("Playwright search:listing_extracted title=%s price=%s", listing.title, listing.price)
                             listings.append(listing)
+                        else:
+                            logger.warning("Playwright search:listing extraction failed for %s", result.url)
                     except PlaywrightError:
+                        logger.exception("Playwright search:page visit failed for %s", result.url)
                         continue
                     finally:
                         details_page.close()
                 browser.close()
         except PlaywrightError:
+            logger.exception("Playwright search failed")
             return []
         listings.sort(key=lambda item: item.score, reverse=True)
+        logger.info("Playwright search:done listings=%s", len(listings[: self.settings.search_results_limit]))
         return listings[: self.settings.search_results_limit]
 
     def _search_results(self, page: Page, request: UserRequest) -> list[SearchResult]:
         query = self._build_query(request)
+        logger.info("Playwright search query=%s", query)
         page.goto(f"https://duckduckgo.com/html/?q={quote_plus(query)}", wait_until="domcontentloaded")
         page.wait_for_timeout(1500)
         anchors = page.locator("a.result__a")
@@ -92,6 +118,7 @@ class PlaywrightListingClient:
                 continue
             seen.add(normalized)
             results.append(SearchResult(title=title or normalized, url=normalized))
+        logger.info("Playwright normalized search results=%s", len(results))
         return results
 
     def _build_query(self, request: UserRequest) -> str:
@@ -158,6 +185,8 @@ class PlaywrightListingClient:
         return listing
 
     def _extract_structured_candidates(self, html: str) -> list[dict[str, Any]]:
+        if BeautifulSoup is None:
+            return []
         soup = BeautifulSoup(html, "html.parser")
         candidates: list[dict[str, Any]] = []
         for script in soup.select("script[type='application/ld+json']"):
