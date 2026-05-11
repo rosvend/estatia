@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -12,6 +13,13 @@ from estatia.models import EvalResult, Listing, NewsInsight, SellerReport, UserR
 from estatia.sample_data import SAMPLE_LISTINGS, SAMPLE_NEWS
 
 logger = logging.getLogger("estatia.services")
+
+
+def normalize_text(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value)
+    return normalized.encode("ascii", "ignore").decode("ascii").strip().lower()
 
 
 class IntakeService(Protocol):
@@ -194,12 +202,12 @@ class SeedListingService(ListingService):
         matches: list[Listing] = []
         nearest_price: float | None = None
         for listing in SAMPLE_LISTINGS:
-            if request.location.city and listing.location.city.lower() != request.location.city.lower():
+            if request.location.city and normalize_text(listing.location.city) != normalize_text(request.location.city):
                 continue
             if (
                 request.location.neighborhood
                 and listing.location.neighborhood
-                and listing.location.neighborhood.lower() != request.location.neighborhood.lower()
+                and normalize_text(listing.location.neighborhood) != normalize_text(request.location.neighborhood)
             ):
                 continue
             if nearest_price is None or listing.price < nearest_price:
@@ -212,7 +220,8 @@ class SeedListingService(ListingService):
                 continue
             score = 0.0
             if request.location.neighborhood and listing.location.neighborhood:
-                score += 0.4
+                if normalize_text(request.location.neighborhood) == normalize_text(listing.location.neighborhood):
+                    score += 0.4
             if request.budget.max:
                 score += max(0.0, 0.4 - abs(listing.price - request.budget.max) / request.budget.max)
             if request.property.bedrooms and listing.property.bedrooms == request.property.bedrooms:

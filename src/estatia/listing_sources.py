@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import unicodedata
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -29,6 +30,7 @@ logger = logging.getLogger("estatia.listing_sources")
 
 
 FINCA_RAIZ_BASE_URL = "https://www.fincaraiz.com.co"
+DEBUG_DIR = Path("debug")
 
 
 @dataclass(slots=True)
@@ -96,55 +98,250 @@ class PlaywrightListingClient:
         return listings[: self.settings.search_results_limit]
 
     def _search_results(self, page: Page, request: UserRequest) -> list[SearchResult]:
+        results_url = self._direct_results_url(request)
+        logger.info("FincaRaiz direct results url=%s", results_url)
+        try:
+            page.goto(results_url, wait_until="domcontentloaded")
+            page.wait_for_timeout(2500)
+        except PlaywrightError:
+            logger.exception("FincaRaiz direct results page failed")
+            return []
+        logger.info("FincaRaiz results url=%s", page.url)
+        logger.info("FincaRaiz results title=%s", page.title())
+
         results: list[SearchResult] = []
         seen: set[str] = set()
-        for search_url in self._candidate_search_urls(request):
-            logger.info("Playwright finca raiz search url=%s", search_url)
-            try:
-                page.goto(search_url, wait_until="domcontentloaded")
-                page.wait_for_timeout(1800)
-            except PlaywrightError:
-                logger.exception("FincaRaiz search page failed for %s", search_url)
+        anchors = page.locator(
+            "a[href*='/apartamento-en-'], "
+            "a[href*='/apartaestudio-en-'], "
+            "a[href*='/casa-en-'], "
+            "a[href*='/oficina-en-'], "
+            "a[href*='/edificio-en-'], "
+            "a[href*='/lote-en-']"
+        )
+        count = min(anchors.count(), self.settings.search_results_limit * 12)
+        logger.info("FincaRaiz raw anchors=%s", count)
+        for index in range(count):
+            href = anchors.nth(index).get_attribute("href") or ""
+            title = (anchors.nth(index).text_content() or "").strip()
+            normalized = self._normalize_url(href)
+            if not normalized or normalized in seen:
                 continue
-
-            anchors = page.locator("a[href*='-en-arriendo-en-'], a[href*='-en-venta-en-']")
-            count = min(anchors.count(), self.settings.search_results_limit * 8)
-            logger.info("FincaRaiz raw anchors=%s", count)
-            for index in range(count):
-                href = anchors.nth(index).get_attribute("href") or ""
-                title = (anchors.nth(index).text_content() or "").strip()
-                normalized = self._normalize_url(href)
-                if not normalized or normalized in seen:
-                    continue
-                if "fincaraiz.com.co" not in normalized:
-                    continue
-                if "/inmuebles-colombia/" in normalized:
-                    continue
-                seen.add(normalized)
-                results.append(SearchResult(title=title or normalized, url=normalized))
-                if len(results) >= self.settings.search_results_limit * 3:
-                    break
-            if results:
+            if "fincaraiz.com.co" not in normalized:
+                continue
+            if "/inmuebles-colombia/" in normalized or "/blog/" in normalized or "/inmobiliarias/" in normalized:
+                continue
+            seen.add(normalized)
+            results.append(SearchResult(title=title or normalized, url=normalized))
+            if len(results) >= self.settings.search_results_limit * 3:
                 break
         logger.info("Playwright normalized search results=%s", len(results))
         return results
 
-    def _candidate_search_urls(self, request: UserRequest) -> list[str]:
-        city_slug = self._slugify(request.location.city or "")
-        property_slug = self._property_slug(request.property.type)
-        intent_slug = self._intent_slug(request)
-        variants = [
-            f"/inmuebles-colombia/{intent_slug}-{property_slug}-{city_slug}",
-            f"/inmuebles-colombia/{intent_slug}-{self._property_plural_slug(request.property.type)}-en-{city_slug}",
-            f"/inmuebles-colombia/{city_slug}-{intent_slug}-{property_slug}",
+    def _direct_results_url(self, request: UserRequest) -> str:
+        intent = "arriendo" if request.intent.value == "rent" else "venta"
+        property_slug = self._property_results_slug(request.property.type)
+        city_slug = self._slugify(request.location.city or "bogota")
+        region_slug = self._region_slug(request.location.city or "")
+        return f"{FINCA_RAIZ_BASE_URL}/{intent}/{property_slug}/{city_slug}/{region_slug}"
+
+    def _submit_finca_raiz_form(self, page: Page, request: UserRequest) -> bool:
+        logger.info("Playwright finca raiz home=%s", FINCA_RAIZ_BASE_URL)
+        try:
+            page.goto(FINCA_RAIZ_BASE_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(1500)
+        except PlaywrightError:
+            logger.exception("FincaRaiz home page failed")
+            return False
+
+        self._accept_cookies(page)
+        self._select_intent(page, request)
+        self._fill_location(page, request)
+        self._select_property_type(page, request)
+
+        search_buttons = [
+            page.get_by_role("button", name=re.compile(r"buscar", re.I)),
+            page.get_by_role("button", name=re.compile(r"ver inmuebles", re.I)),
+            page.locator("button[type='submit']"),
         ]
-        urls: list[str] = []
-        seen: set[str] = set()
-        for variant in variants:
-            if city_slug and variant not in seen:
-                urls.append(urljoin(FINCA_RAIZ_BASE_URL, variant))
-                seen.add(variant)
-        return urls
+        for button in search_buttons:
+            try:
+                if button.count() and button.first.is_visible():
+                    button.first.click()
+                    page.wait_for_load_state("domcontentloaded")
+                    page.wait_for_timeout(2500)
+                    return True
+            except PlaywrightError:
+                logger.exception("FincaRaiz search button interaction failed")
+        try:
+            location_input = self._location_input(page)
+            if location_input is not None:
+                location_input.press("Enter")
+                page.wait_for_load_state("domcontentloaded")
+                page.wait_for_timeout(2500)
+                return True
+        except PlaywrightError:
+            logger.exception("FincaRaiz fallback Enter search failed")
+        return False
+
+    def _accept_cookies(self, page: Page) -> None:
+        buttons = [
+            page.get_by_role("button", name=re.compile(r"acept", re.I)),
+            page.get_by_role("button", name=re.compile(r"entendido", re.I)),
+            page.get_by_role("button", name=re.compile(r"continuar", re.I)),
+        ]
+        for button in buttons:
+            try:
+                if button.count() and button.first.is_visible():
+                    button.first.click()
+                    page.wait_for_timeout(400)
+                    logger.info("FincaRaiz cookies accepted")
+                    return
+            except PlaywrightError:
+                continue
+
+    def _select_intent(self, page: Page, request: UserRequest) -> None:
+        label = "Arriendo" if request.intent.value == "rent" else "Venta"
+        options = [
+            page.get_by_role("button", name=re.compile(label, re.I)),
+            page.get_by_role("tab", name=re.compile(label, re.I)),
+            page.get_by_text(re.compile(label, re.I), exact=False),
+        ]
+        for option in options:
+            try:
+                if option.count() and option.first.is_visible():
+                    option.first.click()
+                    page.wait_for_timeout(500)
+                    logger.info("FincaRaiz intent selected=%s", label)
+                    return
+            except PlaywrightError:
+                continue
+        logger.warning("FincaRaiz intent selector not found for %s", label)
+
+    def _fill_location(self, page: Page, request: UserRequest) -> None:
+        location_input = self._location_input(page)
+        if location_input is None:
+            logger.warning("FincaRaiz location input not found")
+            self._log_visible_inputs(page)
+            self._save_debug_artifacts(page, "fincaraiz-location-missing")
+            return
+
+        target = request.location.neighborhood or request.location.city or ""
+        if request.location.neighborhood and request.location.city:
+            target = f"{request.location.neighborhood}, {request.location.city}"
+        logger.info("FincaRaiz location target=%s", target)
+
+        try:
+            location_input.click()
+            location_input.fill(target)
+            page.wait_for_timeout(1500)
+            suggestions = page.locator("[role='option'], li, [data-testid*='option']")
+            suggestion_count = min(suggestions.count(), 10)
+            logger.info("FincaRaiz location suggestions=%s", suggestion_count)
+            for index in range(suggestion_count):
+                text = (suggestions.nth(index).text_content() or "").strip()
+                if not text:
+                    continue
+                if request.location.city and self._slugify(request.location.city) in self._slugify(text):
+                    suggestions.nth(index).click()
+                    page.wait_for_timeout(500)
+                    logger.info("FincaRaiz location selected=%s", text)
+                    return
+            location_input.press("Enter")
+        except PlaywrightError:
+            logger.exception("FincaRaiz location interaction failed")
+            self._save_debug_artifacts(page, "fincaraiz-location-error")
+
+    def _select_property_type(self, page: Page, request: UserRequest) -> None:
+        if request.property.type == PropertyType.ANY:
+            return
+        label = self._property_form_label(request.property.type)
+        openers = [
+            page.get_by_role("button", name=re.compile(r"tipo", re.I)),
+            page.get_by_text(re.compile(r"tipo", re.I), exact=False),
+            page.locator("[data-testid*='property'], [data-testid*='tipo']"),
+        ]
+        for opener in openers:
+            try:
+                if opener.count() and opener.first.is_visible():
+                    opener.first.click()
+                    page.wait_for_timeout(400)
+                    break
+            except PlaywrightError:
+                continue
+
+        choices = [
+            page.get_by_role("option", name=re.compile(label, re.I)),
+            page.get_by_text(re.compile(label, re.I), exact=False),
+            page.locator(f"text=/{label}/i"),
+        ]
+        for choice in choices:
+            try:
+                if choice.count() and choice.first.is_visible():
+                    choice.first.click()
+                    page.wait_for_timeout(400)
+                    logger.info("FincaRaiz property type selected=%s", label)
+                    return
+            except PlaywrightError:
+                continue
+        logger.warning("FincaRaiz property type selector not found for %s", label)
+
+    def _location_input(self, page: Page):
+        selectors = [
+            "input.location-search__input",
+            "input[placeholder*='ubicación o palabra clave' i]",
+            "input[placeholder*='ubicacion o palabra clave' i]",
+            "input[placeholder*='palabra clave' i]",
+            "input[placeholder*='ciudad' i]",
+            "input[placeholder*='ubic' i]",
+            "input[aria-label*='ciudad' i]",
+            "input[aria-label*='ubic' i]",
+            "input[name*='city' i]",
+            "input[name*='location' i]",
+            "input[type='search']",
+        ]
+        for selector in selectors:
+            locator = page.locator(selector)
+            try:
+                if locator.count() and locator.first.is_visible():
+                    logger.info("FincaRaiz location selector matched=%s", selector)
+                    return locator.first
+            except PlaywrightError:
+                continue
+        return None
+
+    def _log_visible_inputs(self, page: Page) -> None:
+        script = """
+        () => Array.from(document.querySelectorAll('input, textarea, button'))
+          .slice(0, 30)
+          .map((el) => ({
+            tag: el.tagName.toLowerCase(),
+            type: el.getAttribute('type'),
+            id: el.id,
+            name: el.getAttribute('name'),
+            className: el.className,
+            placeholder: el.getAttribute('placeholder'),
+            ariaLabel: el.getAttribute('aria-label'),
+            text: (el.textContent || '').trim().slice(0, 80),
+            visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+          }));
+        """
+        try:
+            controls = page.evaluate(script)
+            logger.info("FincaRaiz visible controls=%s", controls)
+        except PlaywrightError:
+            logger.exception("Failed to inspect visible controls on FincaRaiz")
+
+    def _save_debug_artifacts(self, page: Page, stem: str) -> None:
+        try:
+            DEBUG_DIR.mkdir(exist_ok=True)
+            html_path = DEBUG_DIR / f"{stem}.html"
+            png_path = DEBUG_DIR / f"{stem}.png"
+            html_path.write_text(page.content(), encoding="utf-8")
+            page.screenshot(path=str(png_path), full_page=True)
+            logger.info("Saved FincaRaiz debug artifacts html=%s png=%s", html_path, png_path)
+        except Exception:
+            logger.exception("Failed to save FincaRaiz debug artifacts")
 
     def _extract_listing(self, page: Page, result: SearchResult, request: UserRequest) -> Listing | None:
         html = page.content()
@@ -401,34 +598,41 @@ class PlaywrightListingClient:
         except ValueError:
             return None
 
-    def _intent_slug(self, request: UserRequest) -> str:
+    def _property_form_label(self, property_type: PropertyType) -> str:
         return {
-            "rent": "arriendo",
-            "buy": "venta",
-            "invest": "venta",
-        }.get(request.intent.value, "arriendo")
-
-    def _property_slug(self, property_type: PropertyType) -> str:
-        return {
-            PropertyType.APARTMENT: "apartamento",
-            PropertyType.HOUSE: "casa",
-            PropertyType.STUDIO: "apartaestudio",
-            PropertyType.LOFT: "loft",
-            PropertyType.OFFICE: "oficina",
-            PropertyType.LAND: "lote",
-            PropertyType.ANY: "apartamento",
+            PropertyType.APARTMENT: "Apartamento",
+            PropertyType.HOUSE: "Casa",
+            PropertyType.STUDIO: "Apartaestudio",
+            PropertyType.LOFT: "Loft",
+            PropertyType.OFFICE: "Oficina",
+            PropertyType.LAND: "Lote",
+            PropertyType.ANY: "Apartamento",
         }[property_type]
 
-    def _property_plural_slug(self, property_type: PropertyType) -> str:
+    def _property_results_slug(self, property_type: PropertyType) -> str:
         return {
             PropertyType.APARTMENT: "apartamentos",
             PropertyType.HOUSE: "casas",
             PropertyType.STUDIO: "apartaestudios",
-            PropertyType.LOFT: "lofts",
+            PropertyType.LOFT: "apartamentos",
             PropertyType.OFFICE: "oficinas",
             PropertyType.LAND: "lotes",
             PropertyType.ANY: "apartamentos",
         }[property_type]
+
+    def _region_slug(self, city: str) -> str:
+        normalized = self._slugify(city)
+        mapping = {
+            "bogota": "bogota-dc",
+            "medellin": "antioquia",
+            "envigado": "antioquia",
+            "sabaneta": "antioquia",
+            "rionegro": "antioquia",
+            "pereira": "risaralda",
+            "barranquilla": "atlantico",
+            "cali": "valle-del-cauca",
+        }
+        return mapping.get(normalized, "colombia")
 
     def _slugify(self, value: str) -> str:
         normalized = unicodedata.normalize("NFKD", value)
