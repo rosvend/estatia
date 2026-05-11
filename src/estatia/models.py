@@ -25,6 +25,8 @@ class Location(BaseModel):
     city: str | None = None
     country: str | None = None
     neighborhood: str | None = None
+    radius_km: int | None = None
+    alternate_areas: list[str] = Field(default_factory=list)
 
 
 class Budget(BaseModel):
@@ -136,4 +138,3 @@ class SellerReport(BaseModel):
 class TraceEvent(BaseModel):
     node: str
     message: str
-

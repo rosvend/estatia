@@ -10,6 +10,7 @@ from estatia.config import settings
 from estatia.graph import build_graph
 from estatia.services import (
     OpenAIWorkflowService,
+    PlaywrightListingService,
     SeedListingService,
     SeedNewsService,
     Services,
@@ -23,11 +24,19 @@ app = FastAPI(title=settings.app_name)
 
 def build_services() -> Services:
     workflow = OpenAIWorkflowService(settings)
+    seed_listing = SeedListingService()
+    if settings.listing_mode == "playwright":
+        listing_service = PlaywrightListingService(
+            settings,
+            fallback=seed_listing if settings.enable_seed_fallback else None,
+        )
+    else:
+        listing_service = seed_listing
     return Services(
         intake=workflow,
         evaluation=workflow,
         seller=workflow,
-        listing=SeedListingService(),
+        listing=listing_service,
         news=SeedNewsService(),
         whatsapp=StandbyWhatsAppService(),
     )

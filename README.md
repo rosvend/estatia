@@ -16,6 +16,7 @@ Real-estate agent built with LangGraph, Pydantic, and OpenAI.
 uv venv
 source .venv/bin/activate
 uv sync --extra dev
+uv run playwright install chromium
 uv run uvicorn estatia.app:app --reload --app-dir src
 ```
 
@@ -27,9 +28,11 @@ If `OPENAI_API_KEY` is already in `.env`, the app will load it automatically.
 
 - The LangGraph workflow is implemented.
 - User input is parsed into Pydantic models through OpenAI structured outputs.
-- Listings and news use local seeded providers for now.
+- Listings use a Playwright-backed web search adapter with a seeded fallback.
+- News uses a local seeded provider for now.
 - The WhatsApp validator is a standby stub.
 - The final seller step renders HTML in the app UI.
+- The default models are cost-oriented for development: `gpt-5-nano` for fast parsing and `gpt-5-mini` for evaluation/report generation.
 
 ## Next
 

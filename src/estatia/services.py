@@ -6,6 +6,7 @@ from typing import Protocol
 from openai import OpenAI
 
 from estatia.config import Settings
+from estatia.listing_sources import PlaywrightListingClient
 from estatia.models import EvalResult, Listing, NewsInsight, SellerReport, UserRequest
 from estatia.sample_data import SAMPLE_LISTINGS, SAMPLE_NEWS
 
@@ -207,6 +208,20 @@ class SeedListingService(ListingService):
             matches.append(listing.model_copy(update={"score": round(score, 3)}))
         matches.sort(key=lambda item: item.score, reverse=True)
         return matches[:5]
+
+
+class PlaywrightListingService(ListingService):
+    def __init__(self, settings: Settings, fallback: ListingService | None = None) -> None:
+        self.client = PlaywrightListingClient(settings)
+        self.fallback = fallback
+
+    def search(self, request: UserRequest) -> list[Listing]:
+        listings = self.client.search(request)
+        if listings:
+            return listings
+        if self.fallback is not None:
+            return self.fallback.search(request)
+        return []
 
 
 class SeedNewsService(NewsService):
