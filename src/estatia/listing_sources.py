@@ -4,9 +4,10 @@ import hashlib
 import json
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urljoin, urlparse
 
 from estatia.config import Settings
 from estatia.models import Listing, ListingLocation, ListingProperty, PropertyType, UserRequest
@@ -27,12 +28,7 @@ except Exception:  # pragma: no cover - import depends on local environment
 logger = logging.getLogger("estatia.listing_sources")
 
 
-SEARCH_DOMAINS = (
-    "fincaraiz.com.co",
-    "metrocuadrado.com",
-    "mercadolibre.com.co",
-    "ciencuadras.com",
-)
+FINCA_RAIZ_BASE_URL = "https://www.fincaraiz.com.co"
 
 
 @dataclass(slots=True)
@@ -100,41 +96,55 @@ class PlaywrightListingClient:
         return listings[: self.settings.search_results_limit]
 
     def _search_results(self, page: Page, request: UserRequest) -> list[SearchResult]:
-        query = self._build_query(request)
-        logger.info("Playwright search query=%s", query)
-        page.goto(f"https://duckduckgo.com/html/?q={quote_plus(query)}", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
-        anchors = page.locator("a.result__a")
-        count = min(anchors.count(), self.settings.search_results_limit * 3)
         results: list[SearchResult] = []
         seen: set[str] = set()
-        for index in range(count):
-            href = anchors.nth(index).get_attribute("href") or ""
-            title = (anchors.nth(index).text_content() or "").strip()
-            normalized = self._normalize_url(href)
-            if not normalized or normalized in seen:
+        for search_url in self._candidate_search_urls(request):
+            logger.info("Playwright finca raiz search url=%s", search_url)
+            try:
+                page.goto(search_url, wait_until="domcontentloaded")
+                page.wait_for_timeout(1800)
+            except PlaywrightError:
+                logger.exception("FincaRaiz search page failed for %s", search_url)
                 continue
-            if not any(domain in normalized for domain in SEARCH_DOMAINS):
-                continue
-            seen.add(normalized)
-            results.append(SearchResult(title=title or normalized, url=normalized))
+
+            anchors = page.locator("a[href*='-en-arriendo-en-'], a[href*='-en-venta-en-']")
+            count = min(anchors.count(), self.settings.search_results_limit * 8)
+            logger.info("FincaRaiz raw anchors=%s", count)
+            for index in range(count):
+                href = anchors.nth(index).get_attribute("href") or ""
+                title = (anchors.nth(index).text_content() or "").strip()
+                normalized = self._normalize_url(href)
+                if not normalized or normalized in seen:
+                    continue
+                if "fincaraiz.com.co" not in normalized:
+                    continue
+                if "/inmuebles-colombia/" in normalized:
+                    continue
+                seen.add(normalized)
+                results.append(SearchResult(title=title or normalized, url=normalized))
+                if len(results) >= self.settings.search_results_limit * 3:
+                    break
+            if results:
+                break
         logger.info("Playwright normalized search results=%s", len(results))
         return results
 
-    def _build_query(self, request: UserRequest) -> str:
-        terms = [
-            self._intent_term(request),
-            self._property_type_term(request.property.type),
-            request.location.neighborhood or "",
-            " ".join(request.location.alternate_areas),
-            request.location.city or "",
+    def _candidate_search_urls(self, request: UserRequest) -> list[str]:
+        city_slug = self._slugify(request.location.city or "")
+        property_slug = self._property_slug(request.property.type)
+        intent_slug = self._intent_slug(request)
+        variants = [
+            f"/inmuebles-colombia/{intent_slug}-{property_slug}-{city_slug}",
+            f"/inmuebles-colombia/{intent_slug}-{self._property_plural_slug(request.property.type)}-en-{city_slug}",
+            f"/inmuebles-colombia/{city_slug}-{intent_slug}-{property_slug}",
         ]
-        if request.location.radius_km:
-            terms.append(f"{request.location.radius_km} km")
-        if request.budget.max:
-            terms.append(str(int(request.budget.max)))
-        domains = " OR ".join(f"site:{domain}" for domain in SEARCH_DOMAINS)
-        return " ".join(term for term in terms if term).strip() + f" ({domains})"
+        urls: list[str] = []
+        seen: set[str] = set()
+        for variant in variants:
+            if city_slug and variant not in seen:
+                urls.append(urljoin(FINCA_RAIZ_BASE_URL, variant))
+                seen.add(variant)
+        return urls
 
     def _extract_listing(self, page: Page, result: SearchResult, request: UserRequest) -> Listing | None:
         html = page.content()
@@ -353,24 +363,6 @@ class PlaywrightListingClient:
             score += max(0.0, 0.25 - abs(price - request.budget.max) / request.budget.max)
         return round(score, 3)
 
-    def _intent_term(self, request: UserRequest) -> str:
-        return {
-            "rent": "arriendo apartamento",
-            "buy": "venta apartamento",
-            "invest": "inversión inmueble",
-        }.get(request.intent.value, "inmueble")
-
-    def _property_type_term(self, property_type: PropertyType) -> str:
-        return {
-            PropertyType.APARTMENT: "apartamento",
-            PropertyType.HOUSE: "casa",
-            PropertyType.STUDIO: "apartaestudio",
-            PropertyType.LOFT: "loft",
-            PropertyType.OFFICE: "oficina",
-            PropertyType.LAND: "lote",
-            PropertyType.ANY: "inmueble",
-        }[property_type]
-
     def _normalize_url(self, url: str) -> str:
         if not url:
             return ""
@@ -378,6 +370,8 @@ class PlaywrightListingClient:
             return f"https:{url}"
         if url.startswith("http://") or url.startswith("https://"):
             return url
+        if url.startswith("/"):
+            return urljoin(FINCA_RAIZ_BASE_URL, url)
         return ""
 
     def _coalesce(self, *values: Any) -> str:
@@ -406,3 +400,38 @@ class PlaywrightListingClient:
             return float(cleaned)
         except ValueError:
             return None
+
+    def _intent_slug(self, request: UserRequest) -> str:
+        return {
+            "rent": "arriendo",
+            "buy": "venta",
+            "invest": "venta",
+        }.get(request.intent.value, "arriendo")
+
+    def _property_slug(self, property_type: PropertyType) -> str:
+        return {
+            PropertyType.APARTMENT: "apartamento",
+            PropertyType.HOUSE: "casa",
+            PropertyType.STUDIO: "apartaestudio",
+            PropertyType.LOFT: "loft",
+            PropertyType.OFFICE: "oficina",
+            PropertyType.LAND: "lote",
+            PropertyType.ANY: "apartamento",
+        }[property_type]
+
+    def _property_plural_slug(self, property_type: PropertyType) -> str:
+        return {
+            PropertyType.APARTMENT: "apartamentos",
+            PropertyType.HOUSE: "casas",
+            PropertyType.STUDIO: "apartaestudios",
+            PropertyType.LOFT: "lofts",
+            PropertyType.OFFICE: "oficinas",
+            PropertyType.LAND: "lotes",
+            PropertyType.ANY: "apartamentos",
+        }[property_type]
+
+    def _slugify(self, value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value)
+        ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+        clean = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_only.lower()).strip("-")
+        return clean
