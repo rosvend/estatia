@@ -193,7 +193,13 @@ def build_graph(services: Services, settings: Settings):
                     "Relax room, size, property type, or secondary preference constraints before trying again.",
                 ],
             )
-        html = render_html(report, state["request"], state["evaluation"], state.get("validation", []))
+        html = render_html(
+            report,
+            state["request"],
+            state["evaluation"],
+            state.get("validation", []),
+            state.get("listings", []),
+        )
         logger.info("Node seller:done title=%s", report.title)
         return {
             "report": report,
@@ -315,17 +321,27 @@ def render_html(
     request: UserRequest,
     evaluation: EvalResult,
     validation: list[str],
+    listings: list[Listing],
 ) -> str:
+    listing_map = {item.id: item for item in listings}
     cards = []
     for item in report.recommendations:
+        listing = listing_map.get(item.listing_id)
         reasons = "".join(f"<li>{reason}</li>" for reason in item.why_it_fits)
         tradeoffs = "".join(f"<li>{tradeoff}</li>" for tradeoff in item.tradeoffs)
+        link_html = ""
+        if listing is not None:
+            link_html = (
+                f"<p><a class='listing-link' href='{listing.url}' target='_blank' rel='noreferrer'>"
+                "View apartment listing</a></p>"
+            )
         cards.append(
             (
                 "<article class='card'>"
                 f"<h3>{item.title}</h3>"
                 f"<p class='price'>{item.currency} {item.price:,.0f}</p>"
                 f"<p>{item.neighborhood or 'Area not specified'}</p>"
+                f"{link_html}"
                 f"<h4>Why it fits</h4><ul>{reasons}</ul>"
                 f"<h4>Tradeoffs</h4><ul>{tradeoffs}</ul>"
                 "</article>"

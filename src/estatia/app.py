@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import parse_qs
 
+from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -94,7 +95,10 @@ async def run_workflow(request: Request) -> HTMLResponse:
         services = build_services()
         graph = build_graph(services, settings)
         logger.info("Invoking LangGraph workflow")
-        state = graph.invoke({"raw_text": raw_text, "retries": 0, "trace": []})
+        state = await run_in_threadpool(
+            graph.invoke,
+            {"raw_text": raw_text, "retries": 0, "trace": []},
+        )
         logger.info(
             "Workflow finished with listings=%s evaluation_passed=%s",
             len(state.get("listings", [])),
