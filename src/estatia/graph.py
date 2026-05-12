@@ -14,6 +14,7 @@ logger = logging.getLogger("estatia.graph")
 
 class GraphState(TypedDict, total=False):
     raw_text: str
+    language: str
     request: UserRequest
     listings: list[Listing]
     news: list[NewsInsight]
@@ -31,6 +32,12 @@ def append_trace(state: GraphState, node: str, message: str) -> list[TraceEvent]
     trace = list(state.get("trace", []))
     trace.append(TraceEvent(node=node, message=message))
     return trace
+
+
+def normalize_text(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.strip().lower()
 
 
 def build_graph(services: Services, settings: Settings):
@@ -176,22 +183,38 @@ def build_graph(services: Services, settings: Settings):
                 listings=state.get("listings", []),
                 news=state.get("news", []),
                 evaluation=state["evaluation"],
+                language=state.get("language", "en"),
             )
         else:
+            is_spanish = state.get("language", "en") == "es"
             report = SellerReport(
-                title="No viable properties found yet",
+                title="No se encontraron propiedades viables" if is_spanish else "No viable properties found yet",
                 summary=(
-                    "The current constraints did not produce a reliable shortlist. "
+                    "Las restricciones actuales no produjeron una selección confiable. "
+                    "Usa la retroalimentación de abajo para ampliar la búsqueda antes de contactar vendedores."
+                    if is_spanish
+                    else "The current constraints did not produce a reliable shortlist. "
                     "Use the feedback below to widen the search before contacting sellers."
                 ),
                 recommendations=[],
-                budget_fit=["No property passed the current budget and location filters."],
+                budget_fit=[
+                    "Ninguna propiedad pasó los filtros actuales de presupuesto y ubicación."
+                    if is_spanish
+                    else "No property passed the current budget and location filters."
+                ],
                 market_notes=[state.get("feedback", "Inventory was insufficient for the current request.")],
                 next_steps=[
-                    "Increase the budget range to the closest viable market price.",
-                    "Widen or narrow the target area based on where viable inventory exists.",
-                    "Relax room, size, property type, or secondary preference constraints before trying again.",
+                    "Aumenta el rango de presupuesto al precio de mercado viable más cercano."
+                    if is_spanish
+                    else "Increase the budget range to the closest viable market price.",
+                    "Amplía o reduce el área objetivo según dónde exista inventario viable."
+                    if is_spanish
+                    else "Widen or narrow the target area based on where viable inventory exists.",
+                    "Relaja habitaciones, tamaño, tipo de propiedad o preferencias secundarias antes de intentarlo de nuevo."
+                    if is_spanish
+                    else "Relax room, size, property type, or secondary preference constraints before trying again.",
                 ],
+                language=state.get("language", "en"),
             )
         html = render_html(
             report,
@@ -199,6 +222,7 @@ def build_graph(services: Services, settings: Settings):
             state["evaluation"],
             state.get("validation", []),
             state.get("listings", []),
+            state.get("news", []),
         )
         logger.info("Node seller:done title=%s", report.title)
         return {
@@ -322,28 +346,57 @@ def render_html(
     evaluation: EvalResult,
     validation: list[str],
     listings: list[Listing],
+    news: list[NewsInsight],
 ) -> str:
+    is_spanish = report.language == "es"
     listing_map = {item.id: item for item in listings}
     cards = []
     for item in report.recommendations:
         listing = listing_map.get(item.listing_id)
         reasons = "".join(f"<li>{reason}</li>" for reason in item.why_it_fits)
         tradeoffs = "".join(f"<li>{tradeoff}</li>" for tradeoff in item.tradeoffs)
+        card_neighborhood = item.neighborhood
+        if listing is not None and listing.location.neighborhood:
+            card_neighborhood = listing.location.neighborhood
+        related_news = []
+        for insight in news:
+            insight_area = normalize_text(insight.neighborhood)
+            if insight_area and card_neighborhood and insight_area in normalize_text(card_neighborhood):
+                related_news.append(insight)
+            elif card_neighborhood and normalize_text(card_neighborhood) in insight_area:
+                related_news.append(insight)
+        news_html = ""
+        if related_news:
+            news_items = "".join(
+                (
+                    "<li>"
+                    f"<a class='listing-link' href='{insight.url}' target='_blank' rel='noreferrer'>{insight.title}</a>"
+                    f"<p class='news-summary'>{insight.summary}</p>"
+                    f"<p class='news-source'>{insight.source}</p>"
+                    "</li>"
+                )
+                for insight in related_news[:2]
+            )
+            news_html = (
+                f"<h4>{'Noticias de la zona' if is_spanish else 'Area news'}</h4>"
+                f"<ul class='news-list'>{news_items}</ul>"
+            )
         link_html = ""
         if listing is not None:
             link_html = (
                 f"<p><a class='listing-link' href='{listing.url}' target='_blank' rel='noreferrer'>"
-                "View apartment listing</a></p>"
+                f"{'Ver publicación del inmueble' if is_spanish else 'View apartment listing'}</a></p>"
             )
         cards.append(
             (
                 "<article class='card'>"
                 f"<h3>{item.title}</h3>"
                 f"<p class='price'>{item.currency} {item.price:,.0f}</p>"
-                f"<p>{item.neighborhood or 'Area not specified'}</p>"
+                f"<p>{item.neighborhood or ('Zona no especificada' if is_spanish else 'Area not specified')}</p>"
                 f"{link_html}"
-                f"<h4>Why it fits</h4><ul>{reasons}</ul>"
-                f"<h4>Tradeoffs</h4><ul>{tradeoffs}</ul>"
+                f"<h4>{'Por qué encaja' if is_spanish else 'Why it fits'}</h4><ul>{reasons}</ul>"
+                f"<h4>{'Contras' if is_spanish else 'Tradeoffs'}</h4><ul>{tradeoffs}</ul>"
+                f"{news_html}"
                 "</article>"
             )
         )
@@ -356,30 +409,30 @@ def render_html(
     return f"""
     <section class="report">
       <header class="hero">
-        <p class="eyebrow">Estatia recommendation</p>
+        <p class="eyebrow">{'Recomendación de Estatia' if is_spanish else 'Estatia recommendation'}</p>
         <h1>{report.title}</h1>
         <p>{report.summary}</p>
         <div class="meta">
-          <span>Intent: {request.intent.value}</span>
-          <span>Score: {evaluation.score:.2f}</span>
-          <span>Threshold: {evaluation.threshold:.2f}</span>
+          <span>{'Objetivo' if is_spanish else 'Intent'}: {request.intent.value}</span>
+          <span>{'Puntaje' if is_spanish else 'Score'}: {evaluation.score:.2f}</span>
+          <span>{'Umbral' if is_spanish else 'Threshold'}: {evaluation.threshold:.2f}</span>
         </div>
       </header>
       <section class="cards">{''.join(cards)}</section>
       <section class="panel">
-        <h2>Budget fit</h2>
+        <h2>{'Ajuste al presupuesto' if is_spanish else 'Budget fit'}</h2>
         <ul>{budget_fit}</ul>
       </section>
       <section class="panel">
-        <h2>Market notes</h2>
+        <h2>{'Notas de mercado' if is_spanish else 'Market notes'}</h2>
         <ul>{market_notes}</ul>
       </section>
       <section class="panel">
-        <h2>Next steps</h2>
+        <h2>{'Siguientes pasos' if is_spanish else 'Next steps'}</h2>
         <ul>{next_steps}</ul>
       </section>
       <section class="panel">
-        <h2>WhatsApp validation</h2>
+        <h2>{'Validación por WhatsApp' if is_spanish else 'WhatsApp validation'}</h2>
         <ul>{validation_items}</ul>
       </section>
     </section>

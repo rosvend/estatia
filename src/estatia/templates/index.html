@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ ui.lang if ui else 'en' }}">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -62,6 +62,30 @@
         backdrop-filter: blur(14px);
         position: relative;
         overflow: hidden;
+      }
+
+      .panel-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .language-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 52px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.65);
+        color: var(--ink);
+        text-decoration: none;
+        font-size: 0.8rem;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
       }
 
       .panel::before {
@@ -279,6 +303,32 @@
         font-weight: 700;
       }
 
+      .news-list {
+        display: grid;
+        gap: 12px;
+        padding-left: 18px;
+      }
+
+      .news-list li {
+        margin: 0;
+      }
+
+      .news-summary {
+        margin-top: 6px;
+        margin-bottom: 4px;
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.6;
+      }
+
+      .news-source {
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
       .price {
         display: inline-block;
         margin: 6px 0 10px;
@@ -432,41 +482,40 @@
         <div class="loading-top">
           <div class="loading-ring"></div>
           <div>
-            <h2 class="loading-title">Agent running</h2>
-            <p class="loading-copy">Searching listings, relaxing constraints when needed, and preparing the final report.</p>
+            <h2 class="loading-title">{{ ui.loading_title }}</h2>
+            <p class="loading-copy">{{ ui.loading_copy }}</p>
           </div>
         </div>
         <div class="loading-bar"><span></span></div>
-        <p id="loading-status" class="loading-status">Parsing the request...</p>
+        <p id="loading-status" class="loading-status">{{ ui.loading_title }}</p>
       </div>
     </div>
     <main class="shell">
       <section class="panel">
-        <div class="intro">
-          <p class="label">Real estate brief</p>
-          <h1>{{ title }}</h1>
-          <p class="intro-copy">
-            Write the request the way a client would describe it. The workflow structures the input,
-            searches for listings, relaxes constraints when the market is too tight, and prepares a final recommendation.
-          </p>
+        <div class="panel-header">
+          <div class="intro">
+            <p class="label">{{ ui.brief }}</p>
+            <h1>{{ title }}</h1>
+            <p class="intro-copy">{{ ui.intro }}</p>
+          </div>
+          <a class="language-toggle" href="{{ ui.toggle_href }}">{{ ui.toggle_label }}</a>
         </div>
         <form id="search-form" method="post" action="/run">
-          <label class="label" for="raw_text">User input</label>
+          <input type="hidden" name="language" value="{{ ui.lang }}" />
+          <label class="label" for="raw_text">{{ ui.user_input }}</label>
           <textarea id="raw_text" name="raw_text">{{ raw_text }}</textarea>
-          <p class="supporting-copy">
-            The current version prioritizes listing retrieval and recommendation quality. WhatsApp validation remains on standby.
-          </p>
-          <button id="submit-button" type="submit">Run workflow</button>
+          <p class="supporting-copy">{{ ui.supporting }}</p>
+          <button id="submit-button" type="submit">{{ ui.run }}</button>
         </form>
         {% if error %}
         <div class="error">
-          <h2>Error</h2>
+          <h2>{{ ui.error }}</h2>
           <p>{{ error }}</p>
         </div>
         {% endif %}
         {% if trace %}
         <div>
-          <h2>Trace</h2>
+          <h2>{{ ui.trace }}</h2>
           <ol class="trace">
             {% for event in trace %}
             <li><strong>{{ event.node }}</strong>: {{ event.message }}</li>
@@ -481,8 +530,8 @@
         {% else %}
         <div class="empty">
           <div>
-            <h2>No report yet</h2>
-            <p>The final seller HTML will appear here after the graph finishes.</p>
+            <h2>{{ ui.no_report }}</h2>
+            <p>{{ ui.no_report_copy }}</p>
           </div>
         </div>
         {% endif %}
@@ -493,20 +542,14 @@
       const shell = document.getElementById("loading-shell");
       const status = document.getElementById("loading-status");
       const button = document.getElementById("submit-button");
-      const steps = [
-        "Parsing the request...",
-        "Searching for listings...",
-        "Checking whether constraints need relaxing...",
-        "Evaluating candidate properties...",
-        "Composing the final report..."
-      ];
+      const steps = {{ ui.steps | safe }};
 
       if (form && shell && status && button) {
         form.addEventListener("submit", () => {
           shell.classList.add("is-visible");
           shell.setAttribute("aria-hidden", "false");
           button.disabled = true;
-          button.textContent = "Working...";
+          button.textContent = "{{ ui.working }}";
 
           let index = 0;
           status.textContent = steps[index];

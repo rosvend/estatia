@@ -133,6 +133,7 @@ class SellerReport(BaseModel):
     budget_fit: list[str] = Field(default_factory=list)
     market_notes: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
+    language: str = "en"
 
 
 class TraceEvent(BaseModel):
