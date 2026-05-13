@@ -1,5 +1,5 @@
 from langgraph import START,END,StateGraph
-from typing import TypedDict, Annotated, Literal
+from typing import Literal
 from src.state import PropertyFinderState
 from src.agents import (
     requirements_agent,
@@ -10,6 +10,7 @@ from src.agents import (
     synthesizer_agent,
     evaluator_agent,
     softener_agent,
+    synthesizer_agent,
 )
 
 """Roles and responsibilities of each agent:

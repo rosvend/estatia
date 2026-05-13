@@ -8,7 +8,7 @@ A user describes what they're looking for (location, budget, size, type). Estati
 
 ## Architecture
 
-![AI Agents architecture](docs/Estatia-architecture.png)
+<img src="docs/agent_architecture.png" height="500" width=600>
 
 ## Agents
 
@@ -48,7 +48,7 @@ estatia/
 └── pyproject.toml
 ```
 
-## Quick start
+## Quick start 🚀 
 
 ```bash
 # Install dependencies
