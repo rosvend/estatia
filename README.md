@@ -1,3 +1,6 @@
+
+<img src="docs/estatia_logo3.png" width=300>
+
 # Estatia
 
 Autonomous multi-agent system for real estate acquisition. Agents search listings across multiple sources, verify availability, evaluate properties against user requirements, and iteratively refine results — all without human intervention.
@@ -8,7 +11,7 @@ A user describes what they're looking for (location, budget, size, type). Estati
 
 ## Architecture
 
-<img src="docs/agent_architecture.png" height="500" width=600>
+<img src="docs/estatia_architecture.png" height="500" width=500>
 
 ## Agents
 
