@@ -10,6 +10,7 @@ dependencies = [
     "langgraph>=1.1.10",
     "langgraph-cli[inmem]>=0.4.25",
     "playwright>=1.59.0",
+    "pydantic>=2.7",
     "scrapling[ai,all]>=0.4.8",
     "searxng>=0.0.0.dev0",
 ]

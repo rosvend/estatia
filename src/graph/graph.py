@@ -61,7 +61,7 @@ def evaluation_router(
     state: PropertyFinderState,
 ) -> Literal["done", "best_effort", "softener_agent"]:
     """After evaluation: succeed, give up, or soften and retry."""
-    evaluation = state.get("evaluation", {})
+    evaluation = state.get("evaluation", {}) #TODO: Change to state["evaluation"].passes 
     if evaluation.get("passes"):
         return "done"
     if state.get("softening_attempts", 0) >= max_softening_attempts:

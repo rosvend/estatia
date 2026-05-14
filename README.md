@@ -34,30 +34,6 @@ This repo contains multiple building blocks that power Estatia.
 | `evaluator_agent` | Scores candidates against requirements; decides pass, retry, or give up |
 | `softener_agent` | Relaxes requirement constraints incrementally when evaluation fails; increments retry counter |
 
-## Tech stack
-
-| Layer | Tool |
-|---|---|
-| Language | Python 3.12+ |
-| Package manager | uv |
-| Agent framework | LangGraph |
-| LLM | OpenAI |
-| Web scraping | Scrapling |
-
-## Project structure
-
-```
-estatia/
-├── src/
-│   ├── agents/          # One module per agent
-│   ├── state/           # LangGraph state schema (PropertyFinderState)
-│   ├── graph/           # Graph construction and compilation
-|   ├── tools/           # Tools used by each agent
-│   └── main.py          # Entry point
-├── docs/
-├── .env.example
-└── pyproject.toml
-```
 
 ## Quick start 🚀 
 

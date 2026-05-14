@@ -1,0 +1,81 @@
+"""Property listings — raw, verified, and finalized as candidates.
+
+The pipeline produces three list shapes, in order:
+    `Listing` (scraped) → `VerifiedListing` (WhatsApp-confirmed) →
+    `Candidate` (synthesizer's merged + news-enriched view).
+"""
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from src.state.news import NewsCategory, NewsItem
+
+
+class Listing(BaseModel):
+    """A raw property listing as scraped from a portal.
+
+    Written by: `properties_agent` (from Finca Raíz, Metro Cuadrado, etc.).
+    Read by: `whatsapp_agent` (uses `phone_numbers` to verify availability)
+    and the synthesizer.
+    """
+
+    id: str = Field(..., description="Stable identifier — typically '{source_site}:{listing_id}'.")
+    source_site: str = Field(..., description="Portal slug, e.g. 'fincaraiz', 'metrocuadrado'.")
+    url: str = Field(..., description="Canonical listing URL.")
+    price: float | None = Field(default=None, description="Asking price in COP.")
+    area_m2: float | None = Field(default=None, description="Built area in square meters.")
+    bedrooms: int | None = Field(default=None, description="Number of bedrooms.")
+    bathrooms: int | None = Field(default=None, description="Number of bathrooms.")
+    zone: str | None = Field(
+        default=None,
+        description="Neighborhood / locality string used to join against news by zone.",
+    )
+    phone_numbers: list[str] = Field(
+        default_factory=list,
+        description="Contact numbers extracted from the listing; consumed by whatsapp_agent.",
+    )
+    raw_payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Source-specific extra fields preserved verbatim for traceability.",
+    )
+
+
+class VerifiedListing(Listing):
+    """A `Listing` after `whatsapp_agent` has attempted to confirm availability.
+
+    Inherits every field of `Listing` so callers can treat it polymorphically.
+    Written by: `whatsapp_agent`. Read by: `synthesizer_agent`.
+    """
+
+    availability_confirmed: bool = Field(
+        ...,
+        description="True if the contact party confirmed the unit is still available.",
+    )
+    verification_timestamp: datetime = Field(
+        ..., description="When the verification was completed."
+    )
+    verification_notes: str | None = Field(
+        default=None,
+        description="Free-text observations from the WhatsApp exchange (no reply, agent unsure, etc.).",
+    )
+
+
+class Candidate(BaseModel):
+    """A synthesized, news-enriched property the evaluator will score.
+
+    Written by: `synthesizer_agent` (merges + dedupes verified listings and
+    attaches the news slice matching the listing's zone).
+    Read by: `evaluator_agent`, `done_node`, `best_effort_node`.
+    """
+
+    listing: VerifiedListing = Field(..., description="The underlying verified listing.")
+    relevant_news: dict[NewsCategory, list[NewsItem]] = Field(
+        default_factory=dict,
+        description="News items already filtered to this candidate's zone, grouped by category.",
+    )
+    match_notes: str | None = Field(
+        default=None,
+        description="Synthesizer's annotation about why this candidate was included or merged.",
+    )
