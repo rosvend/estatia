@@ -52,3 +52,6 @@ Key invariants when editing the graph or agents:
 - `src/api/` and `tests/api/` contain only stale `__pycache__/` (streaming.py, schemas.py, app.py, test_app.py existed previously but the source files are gone). If you see imports referencing `src.api.*`, treat them as TODO, not as missing files to find.
 - `tests/` contains files mirroring agent names but they are empty — no real test fixtures exist yet.
 - No `.env.example` is checked in despite the README referencing it.
+
+## MCPs
+You can use context7 MCP for latest documentation on any library and the Scrapling MCP. 
