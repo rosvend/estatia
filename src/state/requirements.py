@@ -68,3 +68,15 @@ class StructuredRequirements(BaseModel):
         default=None,
         description="Natural-language recap of the brief, for UI display and agent context.",
     )
+    priority_weights: dict[str, float] = Field(
+        default_factory=lambda: {"price": 0.34, "location": 0.33, "security": 0.33},
+        description=(
+            "Macro-level user priority weights across thematic axes, applied by "
+            "evaluator_agent on top of per-Constraint importance. Values MUST sum "
+            "to exactly 1.0. Canonical keys are English: 'price', 'location', "
+            "'security'. When the user writes in Spanish, translate before "
+            "populating — e.g. 'seguridad' -> 'security', 'precio' -> 'price', "
+            "'ubicación'/'ubicacion'/'zona' -> 'location'. Use the default split "
+            "only when the user expresses no preference."
+        ),
+    )

@@ -79,3 +79,11 @@ class Candidate(BaseModel):
         default=None,
         description="Synthesizer's annotation about why this candidate was included or merged.",
     )
+    match_score: float = Field(
+        default=0.0,
+        description=(
+            "Final score in [0.0, 1.0] computed by evaluator_agent by combining "
+            "per-Constraint importance with StructuredRequirements.priority_weights. "
+            "0.0 means unscored or total mismatch; 1.0 means perfect match."
+        ),
+    )
