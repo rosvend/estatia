@@ -56,9 +56,7 @@ _TRANSACTION_MAP: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Shared low-level helpers (mostly lifted from the original PoC).
-# ---------------------------------------------------------------------------
 
 
 def _fetch_page(url: str):
@@ -133,9 +131,7 @@ def _safe(fn: Callable[..., Any], *args: Any, default: Any = None, **kwargs: Any
         return default
 
 
-# ---------------------------------------------------------------------------
 # Coordinate + contact-link extraction (shared across sites).
-# ---------------------------------------------------------------------------
 
 # Tuple of (pattern, lat_group, lon_group). Patterns are ordered most-specific
 # first; the first hit wins.
@@ -332,9 +328,7 @@ def _extract_contact_links(page) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # Search-results parsers (shallow — produce {id, url, price} dicts only).
-# ---------------------------------------------------------------------------
 
 
 def _shallow_fincaraiz(card, base_url: str) -> dict | None:
@@ -357,17 +351,89 @@ def _shallow_metrocuadrado(card, base_url: str) -> dict | None:
     return {"id": f"metrocuadrado:{_slug_from_url(url)}", "url": url, "price": price}
 
 
+# Search-URL builders. Each takes the resolved {slug, transaction, location}
+# plus a filters dict (canonical keys, ints only, None values dropped) and
+# returns the full URL. Grammars were verified live with playwright-cli; see
+# the plan file at .claude/plans/ for the full recon table.
+
+
+def _build_fincaraiz_url(slug: str, transaction: str, location: str, filters: dict[str, int]) -> str:
+    """Finca Raíz uses additive path slugs, one per segment. Order is stable
+    (price → rooms → bath → estrato → area → parking) so URLs are
+    deterministic and reproducible."""
+    base = f"https://www.fincaraiz.com.co/{transaction}/{slug}/{location}"
+    parts: list[str] = []
+    if (v := filters.get("min_price")) is not None:
+        parts.append(f"desde-{v}")
+    if (v := filters.get("max_price")) is not None:
+        parts.append(f"hasta-{v}")
+    if (v := filters.get("bedrooms")) is not None:
+        parts.append(f"{v}-habitaciones")
+    if (v := filters.get("bathrooms")) is not None:
+        parts.append(quote(f"{v}-baños", safe="-"))
+    if (v := filters.get("estrato")) is not None:
+        parts.append(f"estrato-{v}")
+    if (v := filters.get("min_area_m2")) is not None:
+        parts.append(f"desde-area-{v}")
+    if (v := filters.get("max_area_m2")) is not None:
+        parts.append(f"hasta-area-{v}")
+    if (v := filters.get("parking_lots")) is not None:
+        parts.append(f"{v}-parqueaderos")
+    # longevity has no stable FR slug — handled by the post-filter.
+    if parts:
+        return base + "/" + "/".join(parts)
+    return base
+
+
+def _build_metrocuadrado_url(slug: str, transaction: str, location: str, filters: dict[str, int]) -> str:
+    """Metro Cuadrado packs all filters into a single hyphen-joined slug
+    segment and requires the ``?search=form`` suffix to parse it. Prices are
+    expressed in *millions* (integer), not raw COP. Ranges work for price
+    and area; bedrooms/bath/estrato/parking only accept a single value."""
+    base = f"https://www.metrocuadrado.com/{slug}/{transaction}/{location}/"
+    tokens: list[str] = []
+
+    min_p = filters.get("min_price")
+    max_p = filters.get("max_price")
+    min_p_m = int(round(min_p / 1_000_000)) if min_p is not None else None
+    max_p_m = int(round(max_p / 1_000_000)) if max_p is not None else None
+    if min_p_m is not None and max_p_m is not None and min_p_m < max_p_m:
+        tokens.append(f"{min_p_m}-{max_p_m}-millones")
+    elif max_p_m is not None:
+        tokens.append(f"{max_p_m}-millones")
+    # min-only price has no clean MC slug — post-filter catches it.
+
+    if (v := filters.get("bedrooms")) is not None:
+        tokens.append(f"{v}-habitaciones")
+    if (v := filters.get("bathrooms")) is not None:
+        tokens.append(f"{v}-banos")
+    if (v := filters.get("estrato")) is not None:
+        tokens.append(f"estrato-{v}")
+    if (v := filters.get("parking_lots")) is not None:
+        tokens.append(f"{v}-parqueaderos")
+
+    min_a = filters.get("min_area_m2")
+    max_a = filters.get("max_area_m2")
+    if min_a is not None and max_a is not None and min_a < max_a:
+        tokens.append(f"{min_a}-{max_a}-m2")
+    # min-only / max-only area: post-filter only.
+
+    if tokens:
+        return base + "-".join(tokens) + "/?search=form"
+    return base
+
+
 _SEARCH_ADAPTERS: list[dict[str, Any]] = [
     {
         "name": "fincaraiz",
-        "url_template": "https://www.fincaraiz.com.co/{transaction}/{slug}/{location}",
+        "url_builder": _build_fincaraiz_url,
         "slug_field": 0,  # index into _PROPERTY_TYPE_MAP value tuple
         "card_selector": ".listingCard",
         "shallow_parser": _shallow_fincaraiz,
     },
     {
         "name": "metrocuadrado",
-        "url_template": "https://www.metrocuadrado.com/{slug}/{transaction}/{location}/",
+        "url_builder": _build_metrocuadrado_url,
         "slug_field": 1,
         "card_selector": "a[href*='/inmueble/']",
         "shallow_parser": _shallow_metrocuadrado,
@@ -375,10 +441,49 @@ _SEARCH_ADAPTERS: list[dict[str, Any]] = [
 ]
 
 
-def _discover_one(adapter: dict[str, Any], location: str, property_type: str, transaction: str) -> list[dict]:
+def _collect_filters(**kwargs: int | None) -> dict[str, int]:
+    """Drop None values and return a plain dict keyed by canonical filter name.
+
+    Canonical keys: ``min_price``, ``max_price``, ``bedrooms``, ``bathrooms``,
+    ``estrato``, ``min_area_m2``, ``max_area_m2``, ``parking_lots``, ``longevity``.
+    """
+    return {k: v for k, v in kwargs.items() if v is not None}
+
+
+def _passes_filters(record: dict, filters: dict[str, int]) -> bool:
+    """Best-effort post-filter on the shallow ``{id, url, price}`` record.
+
+    Currently only ``price`` is reliably present at the shallow stage, so this
+    enforces ``min_price``/``max_price`` and lets unknown fields pass through.
+    Records with ``price = None`` are kept (we can't disprove the constraint)
+    — the deep enricher will revisit.
+    """
+    price = record.get("price")
+    if price is None:
+        return True
+    if (mn := filters.get("min_price")) is not None and price < mn:
+        return False
+    if (mx := filters.get("max_price")) is not None and price > mx:
+        return False
+    return True
+
+
+def _discover_one(
+    adapter: dict[str, Any],
+    location: str,
+    property_type: str,
+    transaction: str,
+    filters: dict[str, int],
+) -> list[dict]:
     name = adapter["name"]
     slug = _PROPERTY_TYPE_MAP[property_type][adapter["slug_field"]]
-    url = adapter["url_template"].format(slug=slug, transaction=transaction, location=location)
+    url = _safe(
+        adapter["url_builder"], slug, transaction, location, filters,
+        default=None,
+    )
+    if not url:
+        logger.warning("[%s] url builder failed — skipping", name)
+        return []
     logger.info("[%s] discovering: %s", name, url)
 
     try:
@@ -408,14 +513,14 @@ def _discover_one(adapter: dict[str, Any], location: str, property_type: str, tr
         rec = _safe(parser, card, url)
         if not rec or rec["url"] in seen_urls:
             continue
+        if not _passes_filters(rec, filters):
+            continue
         seen_urls.add(rec["url"])
         out.append(rec)
     return out
 
 
-# ---------------------------------------------------------------------------
 # Detail-page parsers (deep — produce a full Listing).
-# ---------------------------------------------------------------------------
 
 
 def _first_text(page, selector: str) -> str | None:
@@ -754,9 +859,7 @@ def _parse_metrocuadrado_detail(page, url: str) -> Listing | None:
     )
 
 
-# ---------------------------------------------------------------------------
 # Public tools.
-# ---------------------------------------------------------------------------
 
 
 @tool
@@ -764,17 +867,48 @@ def search_listings(
     location: str = "medellin",
     property_type: str = "apartamentos",
     transaction: str = "arriendo",
+    min_price: int | None = None,
+    max_price: int | None = None,
+    bedrooms: int | None = None,
+    bathrooms: int | None = None,
+    estrato: int | None = None,
+    min_area_m2: int | None = None,
+    max_area_m2: int | None = None,
+    parking_lots: int | None = None,
+    longevity: int | None = None,
 ) -> list[dict]:
     """Discover candidate property URLs across Finca Raíz and Metro Cuadrado.
 
     Returns a lightweight list of ``{"id", "url", "price"}`` dicts — enough to
     deduplicate and shortlist before paying the deep-scrape cost.
 
+    Filters are pushed into the portal URL when the portal supports them
+    (verified live), then a post-filter pass enforces ``min_price``/``max_price``
+    against the shallow card's parsed price as a safety net.
+
+    Per-portal URL filter support:
+
+    - **Finca Raíz**: min/max price, bedrooms, bathrooms, estrato, min/max
+      area, parking. Longevity is post-filter only.
+    - **Metro Cuadrado**: max price + price range, bedrooms (single),
+      bathrooms (single), estrato (single), parking (single), area range.
+      Min-only price, min-only area, and longevity are post-filter only.
+
     Args:
         location: City slug, e.g. ``"medellin"``, ``"bogota"``.
         property_type: One of ``"apartamentos"``, ``"casas"``, ``"locales"``,
             ``"oficinas"``, ``"fincas"``. Unknown values fall back to apartamentos.
         transaction: ``"arriendo"`` (rent) or ``"venta"`` (sale).
+        min_price: Minimum asking price in COP.
+        max_price: Maximum asking price in COP.
+        bedrooms: Exact bedroom count.
+        bathrooms: Exact bathroom count.
+        estrato: Colombian socio-economic stratum (1-6).
+        min_area_m2: Minimum built area in m².
+        max_area_m2: Maximum built area in m².
+        parking_lots: Exact parking space count.
+        longevity: Property age in years; currently post-filter only and
+            effectively unenforceable until the deep parser surfaces it.
     """
     if property_type not in _PROPERTY_TYPE_MAP:
         logger.warning("unknown property_type %r — falling back to 'apartamentos'", property_type)
@@ -783,9 +917,21 @@ def search_listings(
         logger.warning("unknown transaction %r — falling back to 'arriendo'", transaction)
         transaction = "arriendo"
 
+    filters = _collect_filters(
+        min_price=min_price,
+        max_price=max_price,
+        bedrooms=bedrooms,
+        bathrooms=bathrooms,
+        estrato=estrato,
+        min_area_m2=min_area_m2,
+        max_area_m2=max_area_m2,
+        parking_lots=parking_lots,
+        longevity=longevity,
+    )
+
     results: list[dict] = []
     for adapter in _SEARCH_ADAPTERS:
-        results.extend(_discover_one(adapter, location, property_type, transaction))
+        results.extend(_discover_one(adapter, location, property_type, transaction, filters))
     logger.info("discovered %d total listing stub(s) across %d source(s)",
                 len(results), len(_SEARCH_ADAPTERS))
     return results
@@ -844,11 +990,6 @@ def extract_property_details(url: str) -> Listing | None:
     return listing
 
 
-# ---------------------------------------------------------------------------
-# End-to-end demo: discover → enrich.
-# ---------------------------------------------------------------------------
-
-
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -856,8 +997,14 @@ if __name__ == "__main__":
         stream=sys.stderr,
     )
 
-    print("=== Tool 1: search_listings ===", file=sys.stderr)
-    hits: list[dict] = search_listings.invoke({})  # all defaults
+    print("=== Tool 1: search_listings (filtered) ===", file=sys.stderr)
+    hits: list[dict] = search_listings.invoke({
+        "location": "medellin",
+        "property_type": "apartamentos",
+        "transaction": "arriendo",
+        "max_price": 2_500_000,
+        "bedrooms": 2,
+    })
     print(json.dumps(hits[:5], indent=2, ensure_ascii=False))
 
     if not hits:
