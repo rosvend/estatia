@@ -13,9 +13,12 @@ filter pipeline:
    ``area_m2``) can't be expressed in every portal URL reliably, so they are
    enforced *after* the deep scrape, against the fully parsed ``Listing``.
 
-The node deep-scrapes at most 5 discovered URLs to keep latency bounded, then
-returns the survivors under ``raw_listings`` — the state key the downstream
-``whatsapp_agent`` consumes.
+The node deep-scrapes at most 5 discovered URLs — drawn evenly from every
+portal and fetched concurrently — to keep latency bounded, then returns the
+survivors under ``raw_listings``, the state key the downstream
+``whatsapp_agent`` consumes. Finca Raíz and Metro Cuadrado are equally
+important sources of truth, so neither discovery nor enrichment lets one
+portal crowd the other out.
 
 Requirements live in the state as a flat ``list[Constraint]`` keyed by a
 snake_case English ``field`` name that mirrors the :class:`Listing` model.
@@ -24,6 +27,8 @@ snake_case English ``field`` name that mirrors the :class:`Listing` model.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from itertools import zip_longest
 
 from src.state import Constraint, Listing, PropertyFinderState, StructuredRequirements
 from src.tools import extract_property_details, search_listings
@@ -31,7 +36,8 @@ from src.tools import extract_property_details, search_listings
 logger = logging.getLogger(__name__)
 
 #: Deep-scraping is expensive (a stealthy Cloudflare-solving fetch each), so
-#: cap how many discovered URLs we enrich per node run.
+#: cap how many discovered URLs we enrich per node run. The cap is split
+#: evenly across sources by :func:`_balanced_shortlist`.
 MAX_ENRICH = 5
 
 # Constraint.field -> search_listings portal slug. Accepts both the canonical
@@ -159,6 +165,40 @@ def _passes_inmemory(listing: Listing, inmemory: list[Constraint]) -> bool:
     return True
 
 
+def _balanced_shortlist(stubs: list[dict], limit: int) -> list[dict]:
+    """Pick up to ``limit`` stubs, interleaved round-robin by source site.
+
+    Finca Raíz and Metro Cuadrado are equally important sources of truth, so
+    the deep scrape must draw evenly from both. A flat ``stubs[:limit]`` slice
+    would be all-Finca-Raíz (it leads the discovery order); interleaving keeps
+    every portal represented.
+    """
+    by_source: dict[str, list[dict]] = {}
+    for stub in stubs:
+        source = str(stub.get("id", "")).split(":", 1)[0] or "unknown"
+        by_source.setdefault(source, []).append(stub)
+    shortlist: list[dict] = []
+    for row in zip_longest(*by_source.values()):
+        shortlist.extend(stub for stub in row if stub is not None)
+    return shortlist[:limit]
+
+
+def _enrich(stub: dict) -> Listing | None:
+    """Deep-scrape one discovered stub into a full Listing (``None`` on failure).
+
+    Exception-safe so it can be fanned out across a thread pool without one
+    bad fetch aborting the batch.
+    """
+    url = stub.get("url")
+    if not url:
+        return None
+    try:
+        return extract_property_details.invoke({"url": url})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("extract_property_details failed for %s: %s", url, e)
+        return None
+
+
 def properties_node(state: PropertyFinderState) -> dict:
     """Discover, enrich, and filter property listings for the user's brief.
 
@@ -171,7 +211,8 @@ def properties_node(state: PropertyFinderState) -> dict:
     logger.info("properties_node: url_params=%s, %d in-memory constraint(s)",
                 url_params, len(inmemory))
 
-    # 1. Discover — cheap, URL-filtered stubs.
+    # 1. Discover — cheap, URL-filtered stubs. search_listings queries both
+    #    portals concurrently and returns the merged stub list.
     try:
         stubs: list[dict] = search_listings.invoke(url_params)
     except Exception as e:  # noqa: BLE001 — never let a scrape kill the node
@@ -179,23 +220,18 @@ def properties_node(state: PropertyFinderState) -> dict:
         stubs = []
     logger.info("discovered %d stub(s)", len(stubs))
 
-    # 2. Limit — bound the deep-scrape cost.
-    stubs = stubs[:MAX_ENRICH]
+    # 2. Shortlist — bound the deep-scrape cost, drawing evenly from every
+    #    source so one portal can't crowd the other out.
+    shortlist = _balanced_shortlist(stubs, MAX_ENRICH)
 
-    # 3. Enrich — deep-scrape each shortlisted URL into a full Listing.
+    # 3. Enrich — deep-scrape the shortlist concurrently. Each
+    #    extract_property_details call is independent blocking I/O, so a thread
+    #    pool overlaps the per-portal fetches instead of serializing them.
     listings: list[Listing] = []
-    for stub in stubs:
-        url = stub.get("url")
-        if not url:
-            continue
-        try:
-            listing = extract_property_details.invoke({"url": url})
-        except Exception as e:  # noqa: BLE001
-            logger.warning("extract_property_details failed for %s: %s", url, e)
-            continue
-        if listing is not None:
-            listings.append(listing)
-    logger.info("enriched %d/%d listing(s)", len(listings), len(stubs))
+    if shortlist:
+        with ThreadPoolExecutor(max_workers=len(shortlist)) as executor:
+            listings = [lst for lst in executor.map(_enrich, shortlist) if lst is not None]
+    logger.info("enriched %d/%d listing(s)", len(listings), len(shortlist))
 
     # 4. In-memory filter — enforce the constraints URLs can't carry.
     valid_listings = [lst for lst in listings if _passes_inmemory(lst, inmemory)]

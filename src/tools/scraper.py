@@ -37,6 +37,7 @@ import json
 import logging
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urljoin, urlparse
@@ -967,9 +968,17 @@ def search_listings(
         longevity=longevity,
     )
 
-    results: list[dict] = []
-    for adapter in _SEARCH_ADAPTERS:
-        results.extend(_discover_one(adapter, location, property_type, transaction, filters))
+    # Each portal is an independent blocking fetch — discover them concurrently
+    # so neither source waits on the other. Order is preserved (executor.map
+    # yields in submission order) so results stay deterministic.
+    with ThreadPoolExecutor(max_workers=len(_SEARCH_ADAPTERS)) as executor:
+        per_adapter = list(executor.map(
+            lambda adapter: _discover_one(
+                adapter, location, property_type, transaction, filters
+            ),
+            _SEARCH_ADAPTERS,
+        ))
+    results: list[dict] = [rec for sublist in per_adapter for rec in sublist]
     logger.info("discovered %d total listing stub(s) across %d source(s)",
                 len(results), len(_SEARCH_ADAPTERS))
     return results

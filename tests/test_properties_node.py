@@ -62,7 +62,12 @@ def main() -> int:
 
     listings = result.get("raw_listings", [])
     print(f"\nreturn keys: {list(result.keys())}")
-    print(f"raw_listings: {len(listings)} listing(s) survived both filter stages\n")
+    print(f"raw_listings: {len(listings)} listing(s) survived both filter stages")
+    by_source: dict[str, int] = {}
+    for lst in listings:
+        by_source[lst.source_site] = by_source.get(lst.source_site, 0) + 1
+    print(f"by source: {by_source or '{}'}  "
+          "(both portals should appear — they are queried concurrently)\n")
     for lst in listings:
         print(
             f"  - {lst.id}\n"
